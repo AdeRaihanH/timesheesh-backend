@@ -81,10 +81,23 @@ func InitDatabase() {
 	}
 
 	// Auto migrate models
-	err = DB.AutoMigrate(&models.User{}, &models.Project{})
+	err = DB.AutoMigrate(
+		&models.User{},
+		&models.Project{},
+		&models.Contract{},       // Baru
+		&models.ProjectMember{},  // Baru
+		&models.Task{}, 		  // Baru
+		&models.Timesheet{},      // Baru
+		&models.ResourceRequest{},// Baru
+		&models.AuditLog{},       // Baru
+		&models.ContractPayment{}, 
+	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
 	}
 
 	log.Println("Database migration completed")
+
+	// Run data seed
+	Seed()
 }

@@ -71,48 +71,39 @@ func hasAdmin() bool {
 }
 
 // Register handles user registration
-// First registration (public) can only create admin
-// After first admin exists, only authenticated admin can register
+// It allows public registration ONLY for the very first user (who must be an Admin).
+// Once an admin exists, this public endpoint is locked.
+// POST /api/auth/register
 func Register(c *gin.Context) {
 	var req RegisterRequest
 
+	// Bind JSON input to struct
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Check if admin already exists
-	adminExists := hasAdmin()
-
-	// If admin exists, public register is no longer allowed
-	if adminExists {
-		// Get current user from context (set by AuthMiddleware)
-		// If no user in context, it means this is a public request
-		user, exists := c.Get("user")
-		if !exists {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": "Public registration is no longer available. Please use /api/admin/register with admin authentication.",
-			})
-			return
-		}
-
-		// If user exists but not admin, reject
-		userModel := user.(*models.User)
-		if userModel.Role != models.RoleAdmin {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Only admin can register users"})
-			return
-		}
-	} else {
-		// First registration: must be admin role
-		if req.Role != models.RoleAdmin {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "First registration must be admin role",
-			})
-			return
-		}
+	// SECURITY CHECK: INITIAL SETUP ONLY 
+	// Check if any admin already exists in the database
+	if hasAdmin() {
+		// If an admin exists, public registration is completely closed.
+		// New users must be created by an Admin via the User Management module (POST /api/admin/users).
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Public registration is closed. Please contact the Administrator to create an account.",
+		})
+		return
 	}
 
-	// Validate role
+	// For the first user ever, enforce the Role to be Admin.
+	// We cannot allow the first user to be a regular employee, or the system will be inaccessible.
+	if req.Role != models.RoleAdmin {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "System not initialized. The first user MUST be an 'admin'.",
+		})
+		return
+	}
+	
+	// Validate user role enum
 	if !isValidRole(req.Role) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid role. Must be one of: admin, projectmanager, employee, finance",
@@ -120,43 +111,45 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	// Validate employee type for employee role
-	if req.Role == models.RoleEmployee {
+	// Aturan: Admin = NULL, Role Lain = WAJIB ISI
+	if req.Role == models.RoleAdmin {
+		// Admin tidak memiliki tipe kepegawaian
+		req.EmployeeType = nil 
+	} else {
+		// Untuk ProjectManager, Employee, & Finance -> Wajib isi Employee Type
 		if req.EmployeeType == nil {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "employee_type is required for employee role",
+				"error": "employee_type is required for role " + string(req.Role),
 			})
 			return
 		}
+		// Validasi Enum EmployeeType
 		if !isValidEmployeeType(*req.EmployeeType) {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "Invalid employee_type. Must be one of: fulltime, parttime, freelance",
 			})
 			return
 		}
-	} else {
-		// Clear employee type for non-employee roles
-		req.EmployeeType = nil
 	}
 
-	// Check if email already exists
+	// Check for duplicate email
 	var existingUser models.User
 	if err := database.DB.Where("email = ?", req.Email).First(&existingUser).Error; err == nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "Email already exists"})
 		return
 	} else if err != gorm.ErrRecordNotFound {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error checking email"})
 		return
 	}
 
-	// Hash password
+	// Hash the password securely
 	hashedPassword, err := utils.HashPassword(req.Password)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 		return
 	}
 
-	// Create user
+	// Create the user object
 	user := models.User{
 		Email:        req.Email,
 		Password:     hashedPassword,
@@ -165,19 +158,20 @@ func Register(c *gin.Context) {
 		EmployeeType: req.EmployeeType,
 	}
 
+	// Save to database
 	if err := database.DB.Create(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
 		return
 	}
 
-	// Generate token
+	// Auto-login: Generate JWT token for the new user immediately
 	token, err := utils.GenerateToken(&user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate session token"})
 		return
 	}
 
-	// Remove password from response
+	// Prepare response (hide password)
 	user.Password = ""
 
 	c.JSON(http.StatusCreated, AuthResponse{
@@ -187,6 +181,7 @@ func Register(c *gin.Context) {
 }
 
 // Login handles user login
+// POST /api/auth/login
 func Login(c *gin.Context) {
 	var req LoginRequest
 
@@ -229,6 +224,7 @@ func Login(c *gin.Context) {
 }
 
 // GetProfile returns current user profile
+// GET /api/profile
 func GetProfile(c *gin.Context) {
 	user, exists := c.Get("user")
 	if !exists {
@@ -314,4 +310,39 @@ func GetDashboard(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, dashboardData)
+}
+
+// Struct Request
+type ProxyLoginRequest struct {
+	TargetUserID uint `json:"target_user_id" binding:"required"`
+}
+
+// ProxyLogin allows Admin to login as another user
+func ProxyLogin(c *gin.Context) {
+	var req ProxyLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 1. Cari User Target
+	var user models.User
+	if err := database.DB.First(&user, req.TargetUserID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Target user not found"})
+		return
+	}
+
+	// 2. Generate Token (Milik User Tersebut)
+	token, err := utils.GenerateToken(&user) // Asumsi fungsi ini ada di folder utils
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+
+	// 3. Return Token seolah-olah user yang login
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Proxy login successful",
+		"token":   token,
+		"user":    user,
+	})
 }

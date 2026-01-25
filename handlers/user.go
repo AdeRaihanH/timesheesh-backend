@@ -20,6 +20,7 @@ type UpdateUserRequest struct {
 	FullName     *string              `json:"full_name,omitempty"`
 	Role         *models.Role         `json:"role,omitempty"`
 	EmployeeType *models.EmployeeType `json:"employee_type,omitempty"`
+	IsActive     *bool                `json:"is_active,omitempty"`
 }
 
 // CreateUserRequest represents create user request (admin only)
@@ -88,7 +89,8 @@ func GetUserByID(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// CreateUser creates a new user (admin only)
+// CREATE USER (Admin Only)
+// POST /api/admin/users
 func CreateUser(c *gin.Context) {
 	var req CreateUserRequest
 
@@ -97,7 +99,7 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
-	// Validate role
+	// 1. Validate Role Enum
 	if !isValidRole(req.Role) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid role. Must be one of: admin, projectmanager, employee, finance",
@@ -105,11 +107,15 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
-	// Validate employee type for employee role
-	if req.Role == models.RoleEmployee {
+	// 2. Validate Employee Type (Revised Logic)
+	// Admin = NULL. Role Lain = WAJIB ISI.
+	if req.Role == models.RoleAdmin {
+		req.EmployeeType = nil
+	} else {
+		// Jika ProjectManager, Finance, atau Employee
 		if req.EmployeeType == nil {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "employee_type is required for employee role",
+				"error": "employee_type is required for role " + string(req.Role),
 			})
 			return
 		}
@@ -119,12 +125,9 @@ func CreateUser(c *gin.Context) {
 			})
 			return
 		}
-	} else {
-		// Clear employee type for non-employee roles
-		req.EmployeeType = nil
 	}
 
-	// Check if email already exists
+	// 3. Check Email Duplication
 	var existingUser models.User
 	if err := database.DB.Where("email = ?", req.Email).First(&existingUser).Error; err == nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "Email already exists"})
@@ -134,14 +137,14 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
-	// Hash password
+	// 4. Hash Password
 	hashedPassword, err := utils.HashPassword(req.Password)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 		return
 	}
 
-	// Create user
+	// 5. Create User
 	user := models.User{
 		Email:        req.Email,
 		Password:     hashedPassword,
@@ -155,13 +158,13 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
-	// Remove password from response
 	user.Password = ""
-
 	c.JSON(http.StatusCreated, user)
 }
 
-// UpdateUser updates a user (admin only)
+
+// UPDATE USER (Admin Only)
+// PUT /api/admin/users/:id
 func UpdateUser(c *gin.Context) {
 	id := c.Param("id")
 
@@ -181,20 +184,21 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 
-	// Update fields if provided
+	// Update Basic Fields
+	if req.FullName != nil {
+		user.FullName = *req.FullName
+	}
+	if req.IsActive != nil {
+		user.IsActive = *req.IsActive
+	}
 	if req.Email != nil {
-		// Check if email already exists (excluding current user)
 		var existingUser models.User
 		if err := database.DB.Where("email = ? AND id != ?", *req.Email, id).First(&existingUser).Error; err == nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "Email already exists"})
 			return
-		} else if err != gorm.ErrRecordNotFound {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-			return
 		}
 		user.Email = *req.Email
 	}
-
 	if req.Password != nil {
 		hashedPassword, err := utils.HashPassword(*req.Password)
 		if err != nil {
@@ -204,65 +208,56 @@ func UpdateUser(c *gin.Context) {
 		user.Password = hashedPassword
 	}
 
-	if req.FullName != nil {
-		user.FullName = *req.FullName
-	}
-
+	// === LOGIC UPDATE ROLE & EMPLOYEE TYPE ===
+	
+	// Tentukan Role Target (Apakah berubah atau tetap?)
+	targetRole := user.Role
 	if req.Role != nil {
-		// Validate role
 		if !isValidRole(*req.Role) {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid role. Must be one of: admin, projectmanager, employee, finance",
-			})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role"})
 			return
 		}
-		user.Role = *req.Role
-
-		// Handle employee type based on new role
-		if *req.Role == models.RoleEmployee {
-			if req.EmployeeType == nil {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "employee_type is required when role is employee",
-				})
-				return
-			}
-			if !isValidEmployeeType(*req.EmployeeType) {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "Invalid employee_type. Must be one of: fulltime, parttime, freelance",
-				})
-				return
-			}
-			user.EmployeeType = req.EmployeeType
-		} else {
-			// Clear employee type for non-employee roles
-			user.EmployeeType = nil
-		}
-	} else if req.EmployeeType != nil {
-		// If role is not being updated but employee_type is, validate current role
-		if user.Role != models.RoleEmployee {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "employee_type can only be set for employee role",
-			})
-			return
-		}
-		if !isValidEmployeeType(*req.EmployeeType) {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid employee_type. Must be one of: fulltime, parttime, freelance",
-			})
-			return
-		}
-		user.EmployeeType = req.EmployeeType
+		targetRole = *req.Role
 	}
 
-	// Save updated user
+	// Tentukan EmployeeType Target
+	var targetEmpType *models.EmployeeType = user.EmployeeType
+	if req.EmployeeType != nil {
+		targetEmpType = req.EmployeeType
+	}
+
+	// Validasi Kombinasi Baru
+	if targetRole == models.RoleAdmin {
+		// Jika targetnya Admin -> EmployeeType harus NULL
+		targetEmpType = nil
+	} else {
+		// Jika targetnya Non-Admin -> EmployeeType WAJIB ADA
+		if targetEmpType == nil {
+			// Case: Dulunya Admin (Type=nil) -> Diubah jadi PM, tapi lupa kirim employee_type baru
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "employee_type is required when role is set to " + string(targetRole),
+			})
+			return
+		}
+		// Validasi Enum
+		if !isValidEmployeeType(*targetEmpType) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid employee_type"})
+			return
+		}
+	}
+
+	// Apply Changes
+	if req.Role != nil {
+		user.Role = *req.Role
+	}
+	user.EmployeeType = targetEmpType
+
 	if err := database.DB.Save(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user"})
 		return
 	}
 
-	// Remove password from response
 	user.Password = ""
-
 	c.JSON(http.StatusOK, user)
 }
 

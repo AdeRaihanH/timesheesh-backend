@@ -33,6 +33,15 @@ type User struct {
 	FullName     string         `gorm:"not null" json:"full_name"`
 	Role         Role           `gorm:"type:varchar(50);not null" json:"role"`
 	EmployeeType *EmployeeType  `gorm:"type:varchar(50)" json:"employee_type,omitempty"` // Nullable, only for employee role
+	
+	// New
+	FaceEmbedding string         `gorm:"type:text" json:"-"` // Simpan vektor wajah (hash/string)
+	IsActive      bool           `gorm:"default:true" json:"is_active"`
+	
+	// Relations (Optional, for preloading)
+	Contracts     []Contract     `json:"contracts,omitempty"`
+	Timesheets    []Timesheet    `json:"timesheets,omitempty"`
+
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
