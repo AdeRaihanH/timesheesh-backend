@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: timesheesh_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mypassword123}
+      POSTGRES_DB: ${DB_NAME:-postgres_db}
+      TZ: ${DB_TIMEZONE:-UTC}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - timesheesh_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: timesheesh_backend
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # Override DB_HOST to use service name in Docker network
+      DB_HOST: postgres
+      # Override DB_PORT for internal Docker network
+      DB_PORT: 5432
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - timesheesh_network
+
+volumes:
+  postgres_data:
+
+networks:
+  timesheesh_network:
+    driver: bridge
