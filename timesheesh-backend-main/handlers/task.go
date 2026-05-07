@@ -97,25 +97,32 @@ func CreateTask(c *gin.Context) {
 
 // 2. Get Tasks (Filter by Project & My Tasks)
 func GetProjectTasks(c *gin.Context) {
-	projectId := c.Param("projectId")
-	currentUser := c.MustGet("user").(*models.User)
-	
-	// Query param ?my_tasks=true
-	onlyMyTasks := c.Query("my_tasks") == "true"
+    projectId := c.Param("projectId")
+    currentUser := c.MustGet("user").(*models.User)
+    
+    searchTitle := c.Query("title") 
 
-	var tasks []models.Task
-	query := database.DB.Where("project_id = ?", projectId)
+    // Query param ?my_tasks=true
+    onlyMyTasks := c.Query("my_tasks") == "true"
 
-	if onlyMyTasks {
-		query = query.Where("assigned_to_id = ?", currentUser.ID)
-	}
+    var tasks []models.Task
+    query := database.DB.Where("project_id = ?", projectId)
 
-	if err := query.Find(&tasks).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
-		return
-	}
+    if searchTitle != "" {
+        // Logika Mencari judul berdasarkan input user
+        query = query.Where("title LIKE ?", "%"+searchTitle+"%")
+    }
 
-	c.JSON(http.StatusOK, tasks)
+    if onlyMyTasks {
+        query = query.Where("assigned_to_id = ?", currentUser.ID)
+    }
+
+    if err := query.Find(&tasks).Error; err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
+        return
+    }
+
+    c.JSON(http.StatusOK, tasks)
 }
 
 // 3. Update Task Status (Manual update, misal Done)
@@ -137,4 +144,23 @@ func UpdateTaskStatus(c *gin.Context) {
 	database.DB.Save(&task)
 
 	c.JSON(http.StatusOK, task)
+}
+
+// 4. Delete Task
+func DeleteTask(c *gin.Context) {
+    id := c.Param("id")
+    
+    var task models.Task
+    if err := database.DB.First(&task, id).Error; err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+        return
+    }
+
+    //(Soft Delete)
+    if err := database.DB.Delete(&task).Error; err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete task"})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{"message": "Task berhasil dihapus (Soft Delete)"})
 }
