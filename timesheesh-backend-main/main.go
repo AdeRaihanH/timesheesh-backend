@@ -150,9 +150,11 @@ func main() {
 		{
 			tasks.POST("/", handlers.CreateTask)           // Buat Tugas
 			tasks.PUT("/:id/status", handlers.UpdateTaskStatus) // Update Status
+			tasks.DELETE("/:id", handlers.DeleteTask)
 		}
 		// Get Tasks juga butuh akses
 		protected.GET("/project/:projectId/tasks", handlers.GetProjectTasks)
+		protected.GET("/project/:projectId/export", handlers.ExportTasksCSV)
 
 		// Timesheet Routes
 		timesheets := protected.Group("/timesheets")
